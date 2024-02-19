@@ -18,6 +18,10 @@ const int PIN_COOL_1 = 27;
 const int PIN_COOL_2 = 33;
 
 
+const int PWM_FREQ = 25000; // Run Fan PWM on 25KHz
+const int PWM_RESOLUTION = 8; // 8 bit resolution should be enough
+const int PWM_CHANNEL_FAN_IN_1 = 0;
+const int PWM_CHANNEL_FAN_IN_2 = 1;
 uint32_t fanInTachCounter_1 = 0;
 uint32_t fanInTachCounter_2 = 0;
 int lastLightLevel = 0;
@@ -57,8 +61,10 @@ void setFanLevel(int val)
 {
   Serial.print("Setting fan to: "); Serial.println(val);
   inFanPwmLevel = val;
-  analogWrite(PWM_FAN_IN_1, val);
-  analogWrite(PWM_FAN_IN_2, val);
+  //analogWrite(PWM_FAN_IN_1, val);
+  //analogWrite(PWM_FAN_IN_2, val);
+  ledcWrite(PWM_CHANNEL_FAN_IN_1, val);
+  ledcWrite(PWM_CHANNEL_FAN_IN_2, val);
 }
 
 
@@ -145,8 +151,12 @@ void setup() {
   // put your setup code here, to run once:
   pinMode(lightAdcInput, INPUT);
   pinMode(fanAdcInput, INPUT);
-  pinMode(PWM_FAN_IN_1, OUTPUT);
-  pinMode(PWM_FAN_IN_2, OUTPUT);
+  //pinMode(PWM_FAN_IN_1, OUTPUT);
+  //pinMode(PWM_FAN_IN_2, OUTPUT);
+  ledcSetup(PWM_CHANNEL_FAN_IN_1, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(PWM_FAN_IN_1, PWM_CHANNEL_FAN_IN_1);
+  ledcSetup(PWM_CHANNEL_FAN_IN_2, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(PWM_FAN_IN_2, PWM_CHANNEL_FAN_IN_2);
   pinMode(PWM_LIGHT, OUTPUT);
   pinMode(TACH_1, INPUT);
   pinMode(TACH_2, INPUT);
