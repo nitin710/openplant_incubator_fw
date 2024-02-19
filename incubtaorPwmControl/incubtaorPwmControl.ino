@@ -23,9 +23,17 @@ uint32_t fanInTachCounter_2 = 0;
 int lastLightLevel = 0;
 int lastFanLevel = 0;
 const float ADC_RES = 4095.0f;
-int tempSetPoint = 22; // setting temp to 22*C
-int TEMP_DELTA = 1; // allows temp to be +/- 1*C
+float tempSetPoint = 22; // setting temp to 22*C
+float TEMP_DELTA = 0.5; // allows temp to be +/- *C
 int inFanPwmLevel = 0;
+uint32_t timeSinceCoolingUpdate = millis();
+int16_t COOLING_UPDATE_INTERVAL = 5000; // in mS
+String response = "X";
+enum CoolingStatus{
+  OFF,
+  ON
+}coolingStatus;
+
 int getLightLevel()
 {
   int adcVal = analogRead(lightAdcInput);
@@ -74,16 +82,18 @@ long calculateRpm(uint32_t &tachCount)
   return rpm;
 }
 
-void adjustCooling(float temp)
+String adjustCooling(float temp)
 {
-  int rangeMin = tempSetPoint - TEMP_DELTA;
-  int rangeMax = tempSetPoint - TEMP_DELTA;
+  String response = "";
+  Serial.print("AdjustingTemp: "); Serial.print(temp); Serial.print("/"); Serial.println(tempSetPoint);
+  float rangeMin = tempSetPoint - TEMP_DELTA;
+  float rangeMax = tempSetPoint + TEMP_DELTA;
 
-  if (temp > (float)rangeMax)
+  if (temp > rangeMax)
   {
     // temp is higher than expected.
     // check if cooling unit is ON
-    if(digitalRead(PIN_COOL_1) == 1 && digitalRead(PIN_COOL_2) == 1)
+    if(coolingStatus == CoolingStatus::ON)
     {
       // cooling unit is ON
       // set IN FANS to max speed
@@ -93,13 +103,15 @@ void adjustCooling(float temp)
     else
     {
       // peltier is OFF. switch it ON
+      coolingStatus = CoolingStatus::ON;
       digitalWrite(PIN_COOL_1, HIGH);
       digitalWrite(PIN_COOL_2, HIGH);
       // maybe we should have a time based checl? 
       // If it has been >Xmins since peltier switch on, increase fan speed 
     }
+    response = "+";
   }
-  else if (temp < (float)rangeMin)
+  else if (temp < rangeMin)
   {
     if(inFanPwmLevel != 0)
     {
@@ -110,18 +122,23 @@ void adjustCooling(float temp)
     {
       // fans already on lowest speed.
       // cut power to peltier and out fan
+      coolingStatus = CoolingStatus::OFF;
       digitalWrite(PIN_COOL_1, LOW);
       digitalWrite(PIN_COOL_2, LOW);
     }
+    response = "-";
   }
   else
   {
-    // within range. Shut down peltier. and reduce fan speed
-      digitalWrite(PIN_COOL_1, LOW);
-      digitalWrite(PIN_COOL_2, LOW);
+      // within range. Shut down peltier. and reduce fan speed
+      //coolingStatus = CoolingStatus::OFF;
+      //digitalWrite(PIN_COOL_1, LOW);
+      //digitalWrite(PIN_COOL_2, LOW);
       //inFanPwmLevel = 128;
       setFanLevel(128); // cruise at half speed
+      response = "o";
   }
+  return response;
 }
 
 void setup() {
@@ -138,6 +155,7 @@ void setup() {
 
   digitalWrite(PIN_COOL_1, HIGH);  // TODO: implement logic to control cooling unit ON/OFF
   digitalWrite(PIN_COOL_2, HIGH);  // TODO: implement logic to control cooling unit ON/OFF
+  coolingStatus = CoolingStatus::ON;
   Serial.begin(115200);
   // attach interrupt
   attachInterrupt(TACH_1, countTach1Pulse, RISING);
@@ -195,7 +213,12 @@ void loop() {
   aht.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
   
   // Adjust cooling for temperature
-  adjustCooling(temp.temperature);
+  if((millis() - timeSinceCoolingUpdate) > COOLING_UPDATE_INTERVAL)
+  {
+    // every COOLING_UPDATE_INTERVAL 
+    timeSinceCoolingUpdate = millis();
+    response = adjustCooling(temp.temperature);
+  }
 
   // update display
   Serial.print("Temperature: "); Serial.print(temp.temperature); Serial.println(" *C");
@@ -206,8 +229,9 @@ void loop() {
   display.print("Humidity: "); display.print(humidity.relative_humidity); display.print("% rH\n\n");
   display.print("Light level: "); display.print(lightLevel); display.print("\n");
   //display.print("Fan level: "); display.print(fanLevel); display.print("\n");
-  display.print("Fan 1 level: "); display.print(rpm_1); display.print(" rpm"); display.print("\n");
-  display.print("Fan 2 level: "); display.print(rpm_2); display.print(" rpm"); display.print("\n");
+  display.print("Fan 1 speed: "); display.print(rpm_1); display.print(" rpm"); display.print("\n");
+  display.print("Fan 2 speed: "); display.print(rpm_2); display.print(" rpm"); display.print("\n");
+  display.print("INFO: "); display.print(temp.temperature); display.print("/"); display.print(tempSetPoint); display.print(":"); display.println(response);
   display.display();
   delay(500);
 }
