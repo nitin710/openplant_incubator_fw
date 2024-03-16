@@ -40,6 +40,8 @@ String response = "X";
 int lightLevel = 64; // default on startup
 uint32_t lastLightSetTime = 0;
 uint32_t lastTempSetTime = 0;
+const uint8_t MAX_SETTABLE_TEMP = 26;
+const uint8_t MIN_SETTABLE_TEMP = 18;
 
 
 enum CoolingStatus{
@@ -111,7 +113,15 @@ void IRAM_ATTR increaseSetTemp()
   if(millis() - lastTempSetTime > 100)
   {
     lastTempSetTime = millis();
-    tempSetPoint+=1;
+    if(tempSetPoint == MAX_SETTABLE_TEMP)
+    {
+      // wrap around to to max
+      tempSetPoint = MIN_SETTABLE_TEMP;
+    }
+    else
+    {
+      tempSetPoint+=1;
+    }
   }
 }
 
@@ -121,7 +131,15 @@ void IRAM_ATTR decreaseSetTemp()
   if(millis() - lastTempSetTime > 100)
   {
     lastTempSetTime = millis();
-    tempSetPoint-=1;
+    if(tempSetPoint == MIN_SETTABLE_TEMP)
+    {
+      // wrap around to to max
+      tempSetPoint = MAX_SETTABLE_TEMP;
+    }
+    else
+    {
+      tempSetPoint-=1;
+    }
   }
 }
 long calculateRpm(uint32_t &tachCount)
