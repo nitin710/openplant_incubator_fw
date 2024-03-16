@@ -16,6 +16,10 @@ const int TACH_1 = 21;
 const int TACH_2 = A5;
 const int PIN_COOL_1 = 27;
 const int PIN_COOL_2 = 33;
+const int BUTTON_LIGHT = 14;// button C on LED matrix feather wing
+const int BUTTON_SET_TEMP_UP = 15;  // button B on LED matrix
+const int BUTTON_SET_TEMP_DOWN = 32;  //button A on LED matrix
+
 
 
 const int PWM_FREQ = 25000; // Run Fan PWM on 25KHz
@@ -33,6 +37,11 @@ int inFanPwmLevel = 0;
 uint32_t timeSinceCoolingUpdate = millis();
 int16_t COOLING_UPDATE_INTERVAL = 5000; // in mS
 String response = "X";
+int lightLevel = 64; // default on startup
+uint32_t lastLightSetTime = 0;
+uint32_t lastTempSetTime = 0;
+
+
 enum CoolingStatus{
   OFF,
   ON
@@ -78,6 +87,43 @@ void IRAM_ATTR countTach2Pulse() {
   fanInTachCounter_2++;
 }
 
+void IRAM_ATTR updateLightSetting()
+{
+  // Discard multiple erroneous button presses (debouncer)
+  if(millis() - lastLightSetTime > 100)
+  {
+    lastLightSetTime = millis();
+    // increase light level in steps of 32
+    if(lightLevel >= 128)
+    { // wrap around
+      lightLevel = 32;
+    }
+    else
+    {
+      lightLevel += 32;
+    }
+  }
+}
+
+void IRAM_ATTR increaseSetTemp()
+{
+  // increase by 1*C
+  if(millis() - lastTempSetTime > 100)
+  {
+    lastTempSetTime = millis();
+    tempSetPoint+=1;
+  }
+}
+
+void IRAM_ATTR decreaseSetTemp()
+{
+  // decrease by 1*c
+  if(millis() - lastTempSetTime > 100)
+  {
+    lastTempSetTime = millis();
+    tempSetPoint-=1;
+  }
+}
 long calculateRpm(uint32_t &tachCount)
 {
   long rpm = (tachCount * 60 * 2) / 2;
@@ -162,6 +208,9 @@ void setup() {
   pinMode(TACH_2, INPUT);
   pinMode(PIN_COOL_1, OUTPUT);
   pinMode(PIN_COOL_2, OUTPUT);
+  pinMode(BUTTON_LIGHT, INPUT_PULLUP);
+  pinMode(BUTTON_SET_TEMP_UP, INPUT_PULLUP);
+  pinMode(BUTTON_SET_TEMP_DOWN, INPUT);
 
   digitalWrite(PIN_COOL_1, HIGH);  // TODO: implement logic to control cooling unit ON/OFF
   digitalWrite(PIN_COOL_2, HIGH);  // TODO: implement logic to control cooling unit ON/OFF
@@ -170,6 +219,9 @@ void setup() {
   // attach interrupt
   attachInterrupt(TACH_1, countTach1Pulse, RISING);
   attachInterrupt(TACH_2, countTach2Pulse, RISING);
+  attachInterrupt(BUTTON_LIGHT, updateLightSetting, FALLING);
+  attachInterrupt(BUTTON_SET_TEMP_UP, decreaseSetTemp, FALLING);
+  attachInterrupt(BUTTON_SET_TEMP_DOWN, increaseSetTemp, FALLING);
 
   if (! aht.begin()) {
   Serial.println("Could not find AHT10? Check wiring");
@@ -197,10 +249,14 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  int lightLevel = getLightLevel();
-  if(lightLevel != lastLightLevel)
+  // int lightLevel = getLightLevel();
+  // if(lightLevel != lastLightLevel)
+  // {
+  //   lastLightLevel = lightLevel;
+  //   setLightLevel(lightLevel);
+  // }
+  if(lastLightLevel != lightLevel)
   {
-    lastLightLevel = lightLevel;
     setLightLevel(lightLevel);
   }
   
