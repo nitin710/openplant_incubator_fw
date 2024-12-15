@@ -257,7 +257,7 @@ void setup() {
   display.clearDisplay();
   display.display();
 
-  display.setRotation(3);
+  display.setRotation(1);
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(0,0);
