@@ -1,0 +1,820 @@
+[
+  {
+    "id": "op-tab",
+    "type": "tab",
+    "label": "OpenPlant Incubators",
+    "disabled": false,
+    "info": "Dashboard for incubators publishing on openplant/incubator/<id>/{status,meta,state}.\nControls publish to openplant/incubator/<id>/cmd/{setpoint,light}.",
+    "env": [
+      {
+        "name": "LOG_DIR",
+        "value": "/home/cybermat/openplant",
+        "type": "str"
+      }
+    ]
+  },
+  {
+    "id": "op-mqtt-in",
+    "type": "mqtt in",
+    "z": "op-tab",
+    "name": "openplant/incubator/+/+",
+    "topic": "openplant/incubator/+/+",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker-pi",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 120,
+    "wires": [
+      [
+        "op-fn-registry",
+        "op-fn-csv"
+      ]
+    ]
+  },
+  {
+    "id": "op-fn-registry",
+    "type": "function",
+    "z": "op-tab",
+    "name": "Track devices",
+    "func": "// Topic: openplant/incubator/<id>/<status|meta|state>\nconst parts = msg.topic.split('/');\nconst id = parts[2];\nconst kind = parts[3];\nif (!id || !['status', 'meta', 'state'].includes(kind)) return null;\n\nconst devices = flow.get('devices') || {};\nconst isNew = !devices[id];\nconst dev = devices[id] || (devices[id] = { id: id });\n\nif (kind === 'status') dev.status = String(msg.payload);\nelse if (kind === 'meta') dev.meta = msg.payload;\nelse { dev.state = msg.payload; dev.lastSeen = Date.now(); }\nflow.set('devices', devices);\n\nlet selected = flow.get('selected');\nlet menu = null;\nif (isNew) {\n    if (!selected) { selected = id; flow.set('selected', id); }\n    menu = {\n        options: Object.keys(devices).sort().map(d => ({ label: d, value: d })),\n        payload: selected\n    };\n}\nconst show = id === selected ? { device: id, topic: kind } : null;\nreturn [menu, show];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 120,
+    "wires": [
+      [
+        "op-dd-device"
+      ],
+      [
+        "op-fn-display"
+      ]
+    ]
+  },
+  {
+    "id": "op-dd-device",
+    "type": "ui-dropdown",
+    "z": "op-tab",
+    "group": "op-grp-device",
+    "name": "Incubator",
+    "label": "Incubator",
+    "tooltip": "",
+    "order": 1,
+    "width": 6,
+    "height": 1,
+    "passthru": false,
+    "multiple": false,
+    "chips": false,
+    "clearable": false,
+    "options": [],
+    "payload": "",
+    "topic": "topic",
+    "topicType": "msg",
+    "className": "",
+    "typeIsComboBox": true,
+    "msgTrigger": "onChange",
+    "x": 620,
+    "y": 60,
+    "wires": [
+      [
+        "op-fn-select"
+      ]
+    ]
+  },
+  {
+    "id": "op-fn-select",
+    "type": "function",
+    "z": "op-tab",
+    "name": "Switch device",
+    "func": "// Operator picked another incubator: clear the charts and redraw from cache\nflow.set('selected', msg.payload);\nconst dev = (flow.get('devices') || {})[msg.payload];\nif (!dev) return null;\nconst show = ['status', 'meta', 'state']\n    .filter(k => dev[k] !== undefined)\n    .map(k => ({ device: dev.id, topic: k }));\nreturn [show, { payload: [] }];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 620,
+    "y": 200,
+    "wires": [
+      [
+        "op-fn-display"
+      ],
+      [
+        "op-chart-temp",
+        "op-chart-hum",
+        "op-chart-fan"
+      ]
+    ]
+  },
+  {
+    "id": "op-inject-tick",
+    "type": "inject",
+    "z": "op-tab",
+    "name": "every 30 s",
+    "props": [],
+    "repeat": "30",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "5",
+    "topic": "",
+    "x": 160,
+    "y": 260,
+    "wires": [
+      [
+        "op-fn-tick"
+      ]
+    ]
+  },
+  {
+    "id": "op-fn-tick",
+    "type": "function",
+    "z": "op-tab",
+    "name": "Stale check",
+    "func": "const id = flow.get('selected');\nreturn id ? { device: id, topic: 'tick' } : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 260,
+    "wires": [
+      [
+        "op-fn-display"
+      ]
+    ]
+  },
+  {
+    "id": "op-fn-display",
+    "type": "function",
+    "z": "op-tab",
+    "name": "Render",
+    "func": "// Renders the selected incubator from the cache in flow context\nconst STALE_MS = 90 * 1000;  // firmware publishes every 30 s\nconst dev = (flow.get('devices') || {})[msg.device];\nif (!dev) return null;\n\nconst out = new Array(11).fill(null);\n\n// Connection: retained status (LWT) plus our own staleness check\nlet conn;\nif (dev.status === 'offline') conn = '🔴 Offline';\nelse if (dev.lastSeen && Date.now() - dev.lastSeen > STALE_MS)\n    conn = '🟠 No data for ' + Math.round((Date.now() - dev.lastSeen) / 60000) + ' min';\nelse if (dev.status === 'online') conn = '🟢 Online';\nelse conn = '⚪ Unknown';\nout[0] = { payload: conn };\n\nif (msg.topic === 'meta' && dev.meta) {\n    const m = dev.meta;\n    out[1] = { payload: 'FW ' + m.fw + '  ·  ' + m.ip + '  ·  ' + m.mac };\n}\n\nif (msg.topic === 'state' && dev.state) {\n    const s = dev.state;\n    const up = s.uptime || 0;\n    const d = Math.floor(up / 86400), h = Math.floor(up % 86400 / 3600), mi = Math.floor(up % 3600 / 60);\n    const uptime = (d ? d + 'd ' : '') + h + 'h ' + mi + 'm';\n\n    out[2] = { payload: s.temp };\n    out[3] = { payload: s.humidity };\n    out[4] = [{ topic: 'Temperature', payload: s.temp }, { topic: 'Setpoint', payload: s.setpoint }];\n    out[5] = { topic: 'Humidity', payload: s.humidity };\n    out[6] = [{ topic: 'Fan 1', payload: s.fan1_rpm }, { topic: 'Fan 2', payload: s.fan2_rpm }];\n    out[7] = { payload: (s.cooling === 'ON' ? '❄️ Cooling' : '⏸ Idle') + '  ·  setpoint ' + s.setpoint + ' °C  ·  light ' + s.light };\n    out[8] = { payload: s.setpoint };\n    out[9] = { payload: s.light };\n    node.status({ text: s.temp + ' °C, ' + s.cooling + ', RSSI ' + s.rssi + ', up ' + uptime });\n    out[10] = { payload: 'RSSI ' + s.rssi + ' dBm  ·  up ' + uptime };\n}\nreturn out;",
+    "outputs": 11,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 860,
+    "y": 200,
+    "wires": [
+      [
+        "op-txt-conn"
+      ],
+      [
+        "op-txt-meta"
+      ],
+      [
+        "op-gauge-temp"
+      ],
+      [
+        "op-gauge-hum"
+      ],
+      [
+        "op-chart-temp"
+      ],
+      [
+        "op-chart-hum"
+      ],
+      [
+        "op-chart-fan"
+      ],
+      [
+        "op-txt-mode"
+      ],
+      [
+        "op-sl-setpoint"
+      ],
+      [
+        "op-bg-light"
+      ],
+      [
+        "op-txt-signal"
+      ]
+    ]
+  },
+  {
+    "id": "op-txt-conn",
+    "type": "ui-text",
+    "z": "op-tab",
+    "group": "op-grp-device",
+    "order": 2,
+    "width": 6,
+    "height": 1,
+    "name": "Connection",
+    "label": "Connection",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#717171",
+    "className": "",
+    "x": 1140,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "op-txt-meta",
+    "type": "ui-text",
+    "z": "op-tab",
+    "group": "op-grp-device",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "name": "Device",
+    "label": "Device",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#717171",
+    "className": "",
+    "x": 1140,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "op-txt-signal",
+    "type": "ui-text",
+    "z": "op-tab",
+    "group": "op-grp-device",
+    "order": 4,
+    "width": 6,
+    "height": 1,
+    "name": "Signal",
+    "label": "Signal",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#717171",
+    "className": "",
+    "x": 1140,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "op-gauge-temp",
+    "type": "ui-gauge",
+    "z": "op-tab",
+    "name": "Temperature",
+    "group": "op-grp-live",
+    "order": 1,
+    "width": 3,
+    "height": 3,
+    "gtype": "gauge-half",
+    "gstyle": "needle",
+    "title": "Temperature",
+    "units": "°C",
+    "icon": "",
+    "prefix": "",
+    "suffix": "°C",
+    "segments": [
+      {
+        "from": 10,
+        "color": "#0080ff"
+      },
+      {
+        "from": 18,
+        "color": "#00b500"
+      },
+      {
+        "from": 26,
+        "color": "#e6e600"
+      },
+      {
+        "from": 30,
+        "color": "#c80000"
+      }
+    ],
+    "min": 10,
+    "max": 35,
+    "sizeThickness": 16,
+    "sizeGap": 4,
+    "sizeKeyThickness": 8,
+    "styleRounded": true,
+    "styleGlow": false,
+    "className": "",
+    "x": 1140,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "op-gauge-hum",
+    "type": "ui-gauge",
+    "z": "op-tab",
+    "name": "Humidity",
+    "group": "op-grp-live",
+    "order": 2,
+    "width": 3,
+    "height": 3,
+    "gtype": "gauge-half",
+    "gstyle": "needle",
+    "title": "Humidity",
+    "units": "%",
+    "icon": "",
+    "prefix": "",
+    "suffix": "%",
+    "segments": [
+      {
+        "from": 0,
+        "color": "#c80000"
+      },
+      {
+        "from": 30,
+        "color": "#00b500"
+      },
+      {
+        "from": 80,
+        "color": "#c80000"
+      }
+    ],
+    "min": 0,
+    "max": 100,
+    "sizeThickness": 16,
+    "sizeGap": 4,
+    "sizeKeyThickness": 8,
+    "styleRounded": true,
+    "styleGlow": false,
+    "className": "",
+    "x": 1140,
+    "y": 200,
+    "wires": []
+  },
+  {
+    "id": "op-txt-mode",
+    "type": "ui-text",
+    "z": "op-tab",
+    "group": "op-grp-live",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "name": "Status",
+    "label": "Status",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#717171",
+    "className": "",
+    "x": 1140,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "op-chart-temp",
+    "type": "ui-chart",
+    "z": "op-tab",
+    "group": "op-grp-history",
+    "name": "Temperature vs setpoint",
+    "label": "Temperature vs setpoint",
+    "order": 1,
+    "chartType": "line",
+    "category": "topic",
+    "categoryType": "msg",
+    "xAxisLabel": "",
+    "xAxisProperty": "",
+    "xAxisPropertyType": "timestamp",
+    "xAxisType": "time",
+    "xAxisFormat": "",
+    "xAxisFormatType": "auto",
+    "xmin": "",
+    "xmax": "",
+    "yAxisLabel": "°C",
+    "yAxisProperty": "payload",
+    "yAxisPropertyType": "msg",
+    "ymin": "",
+    "ymax": "",
+    "bins": 10,
+    "action": "append",
+    "stackSeries": false,
+    "pointShape": "false",
+    "pointRadius": 4,
+    "showLegend": true,
+    "removeOlder": 24,
+    "removeOlderUnit": "3600",
+    "removeOlderPoints": "",
+    "colors": [
+      "#0094CE",
+      "#ff7f0e",
+      "#ff7f0e",
+      "#2ca02c",
+      "#a347e1",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "textColor": [
+      "#666666"
+    ],
+    "textColorDefault": true,
+    "gridColor": [
+      "#e5e5e5"
+    ],
+    "gridColorDefault": true,
+    "width": 12,
+    "height": 4,
+    "className": "",
+    "interpolation": "linear",
+    "x": 1150,
+    "y": 300,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "op-chart-hum",
+    "type": "ui-chart",
+    "z": "op-tab",
+    "group": "op-grp-history",
+    "name": "Humidity",
+    "label": "Humidity",
+    "order": 2,
+    "chartType": "line",
+    "category": "topic",
+    "categoryType": "msg",
+    "xAxisLabel": "",
+    "xAxisProperty": "",
+    "xAxisPropertyType": "timestamp",
+    "xAxisType": "time",
+    "xAxisFormat": "",
+    "xAxisFormatType": "auto",
+    "xmin": "",
+    "xmax": "",
+    "yAxisLabel": "%",
+    "yAxisProperty": "payload",
+    "yAxisPropertyType": "msg",
+    "ymin": "",
+    "ymax": "",
+    "bins": 10,
+    "action": "append",
+    "stackSeries": false,
+    "pointShape": "false",
+    "pointRadius": 4,
+    "showLegend": true,
+    "removeOlder": 24,
+    "removeOlderUnit": "3600",
+    "removeOlderPoints": "",
+    "colors": [
+      "#2ca02c",
+      "#ff7f0e",
+      "#2ca02c",
+      "#a347e1",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "textColor": [
+      "#666666"
+    ],
+    "textColorDefault": true,
+    "gridColor": [
+      "#e5e5e5"
+    ],
+    "gridColorDefault": true,
+    "width": 12,
+    "height": 4,
+    "className": "",
+    "interpolation": "linear",
+    "x": 1130,
+    "y": 340,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "op-chart-fan",
+    "type": "ui-chart",
+    "z": "op-tab",
+    "group": "op-grp-history",
+    "name": "Fan speed",
+    "label": "Fan speed",
+    "order": 3,
+    "chartType": "line",
+    "category": "topic",
+    "categoryType": "msg",
+    "xAxisLabel": "",
+    "xAxisProperty": "",
+    "xAxisPropertyType": "timestamp",
+    "xAxisType": "time",
+    "xAxisFormat": "",
+    "xAxisFormatType": "auto",
+    "xmin": "",
+    "xmax": "",
+    "yAxisLabel": "RPM",
+    "yAxisProperty": "payload",
+    "yAxisPropertyType": "msg",
+    "ymin": "",
+    "ymax": "",
+    "bins": 10,
+    "action": "append",
+    "stackSeries": false,
+    "pointShape": "false",
+    "pointRadius": 4,
+    "showLegend": true,
+    "removeOlder": 24,
+    "removeOlderUnit": "3600",
+    "removeOlderPoints": "",
+    "colors": [
+      "#0095ff",
+      "#ff0000",
+      "#ff7f0e",
+      "#2ca02c",
+      "#a347e1",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "textColor": [
+      "#666666"
+    ],
+    "textColorDefault": true,
+    "gridColor": [
+      "#e5e5e5"
+    ],
+    "gridColorDefault": true,
+    "width": 12,
+    "height": 4,
+    "className": "",
+    "interpolation": "linear",
+    "x": 1130,
+    "y": 380,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "op-sl-setpoint",
+    "type": "ui-slider",
+    "z": "op-tab",
+    "group": "op-grp-controls",
+    "name": "Setpoint",
+    "label": "Setpoint (°C)",
+    "tooltip": "",
+    "order": 1,
+    "width": 6,
+    "height": 1,
+    "passthru": false,
+    "outs": "end",
+    "topic": "setpoint",
+    "topicType": "str",
+    "thumbLabel": "always",
+    "showTicks": "always",
+    "min": 18,
+    "max": 26,
+    "step": 1,
+    "className": "",
+    "iconPrepend": "",
+    "iconAppend": "",
+    "color": "",
+    "colorTrack": "",
+    "colorThumb": "",
+    "showTextField": false,
+    "x": 1130,
+    "y": 440,
+    "wires": [
+      [
+        "op-fn-cmd"
+      ]
+    ]
+  },
+  {
+    "id": "op-bg-light",
+    "type": "ui-button-group",
+    "z": "op-tab",
+    "group": "op-grp-controls",
+    "name": "Light",
+    "label": "Light",
+    "tooltip": "",
+    "order": 2,
+    "width": 6,
+    "height": 1,
+    "passthru": false,
+    "options": [
+      {
+        "label": "Dim",
+        "icon": "",
+        "value": "32",
+        "valueType": "num"
+      },
+      {
+        "label": "Low",
+        "icon": "",
+        "value": "64",
+        "valueType": "num"
+      },
+      {
+        "label": "Medium",
+        "icon": "",
+        "value": "96",
+        "valueType": "num"
+      },
+      {
+        "label": "Bright",
+        "icon": "",
+        "value": "128",
+        "valueType": "num"
+      }
+    ],
+    "useThemeColors": true,
+    "rounded": false,
+    "topic": "light",
+    "topicType": "str",
+    "className": "",
+    "x": 1120,
+    "y": 480,
+    "wires": [
+      [
+        "op-fn-cmd"
+      ]
+    ]
+  },
+  {
+    "id": "op-fn-cmd",
+    "type": "function",
+    "z": "op-tab",
+    "name": "Build cmd topic",
+    "func": "// Sends a dashboard control to the selected incubator\nconst id = flow.get('selected');\nif (!id) { node.warn('No incubator selected'); return null; }\nreturn {\n    topic: 'openplant/incubator/' + id + '/cmd/' + msg.topic,\n    payload: String(msg.payload)\n};",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1340,
+    "y": 460,
+    "wires": [
+      [
+        "op-mqtt-out"
+      ]
+    ]
+  },
+  {
+    "id": "op-mqtt-out",
+    "type": "mqtt out",
+    "z": "op-tab",
+    "name": "cmd",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "broker-pi",
+    "x": 1530,
+    "y": 460,
+    "wires": []
+  },
+  {
+    "id": "op-fn-csv",
+    "type": "function",
+    "z": "op-tab",
+    "name": "CSV line",
+    "func": "// One CSV per incubator per day\nconst parts = msg.topic.split('/');\nif (parts[3] !== 'state') return null;\nconst id = parts[2];\nconst s = msg.payload;\nconst ts = new Date().toISOString();\nconst filename = env.get('LOG_DIR') + '/' + id + '_' + ts.slice(0, 10) + '.csv';\nlet line = [ts, s.temp, s.humidity, s.fan1_rpm, s.fan2_rpm, s.light, s.setpoint, s.cooling, s.rssi, s.uptime].join(',') + '\\n';\nif (!fs.existsSync(filename))\n    line = 'timestamp,temp_C,humidity_pct,fan1_rpm,fan2_rpm,light,setpoint_C,cooling,rssi_dBm,uptime_s\\n' + line;\nreturn { filename: filename, payload: line };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      }
+    ],
+    "x": 380,
+    "y": 360,
+    "wires": [
+      [
+        "op-file-log"
+      ]
+    ]
+  },
+  {
+    "id": "op-file-log",
+    "type": "file",
+    "z": "op-tab",
+    "name": "Append CSV",
+    "filename": "filename",
+    "filenameType": "msg",
+    "appendNewline": false,
+    "createDir": true,
+    "overwriteFile": "false",
+    "encoding": "utf8",
+    "x": 590,
+    "y": 360,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "op-page",
+    "type": "ui-page",
+    "name": "Incubators",
+    "ui": "ui-base-1",
+    "path": "/incubators",
+    "icon": "sprout",
+    "layout": "grid",
+    "theme": "ui-theme-1",
+    "breakpoints": [
+      {
+        "name": "Default",
+        "px": "0",
+        "cols": "3"
+      },
+      {
+        "name": "Tablet",
+        "px": "576",
+        "cols": "6"
+      },
+      {
+        "name": "Small Desktop",
+        "px": "768",
+        "cols": "9"
+      },
+      {
+        "name": "Desktop",
+        "px": "1024",
+        "cols": "12"
+      }
+    ],
+    "order": 0,
+    "className": "",
+    "visible": "true",
+    "disabled": "false"
+  },
+  {
+    "id": "op-grp-device",
+    "type": "ui-group",
+    "name": "Device",
+    "page": "op-page",
+    "width": "6",
+    "height": "1",
+    "order": 1,
+    "showTitle": true,
+    "className": "",
+    "visible": "true",
+    "disabled": "false",
+    "groupType": "default"
+  },
+  {
+    "id": "op-grp-live",
+    "type": "ui-group",
+    "name": "Live",
+    "page": "op-page",
+    "width": "6",
+    "height": "1",
+    "order": 2,
+    "showTitle": true,
+    "className": "",
+    "visible": "true",
+    "disabled": "false",
+    "groupType": "default"
+  },
+  {
+    "id": "op-grp-controls",
+    "type": "ui-group",
+    "name": "Controls",
+    "page": "op-page",
+    "width": "6",
+    "height": "1",
+    "order": 3,
+    "showTitle": true,
+    "className": "",
+    "visible": "true",
+    "disabled": "false",
+    "groupType": "default"
+  },
+  {
+    "id": "op-grp-history",
+    "type": "ui-group",
+    "name": "History (24 h)",
+    "page": "op-page",
+    "width": "12",
+    "height": "1",
+    "order": 4,
+    "showTitle": true,
+    "className": "",
+    "visible": "true",
+    "disabled": "false",
+    "groupType": "default"
+  }
+]
