@@ -323,6 +323,23 @@ void readSensors()
   }
 }
 
+void haltNoSensor()
+{
+  // No sensor at boot: cooler off and stop here, blinking the red LED at 1 Hz
+  digitalWrite(PIN_COOL_1, LOW);
+  digitalWrite(PIN_COOL_2, LOW);
+  coolingStatus = CoolingStatus::OFF;
+  pinMode(LED_BUILTIN, OUTPUT);
+  Serial.println("No temperature sensor found (AHT 0x38, SHTC3 0x70). Check wiring. Halted.");
+  while(1)
+  {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(500);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(500);
+  }
+}
+
 void coolingFailSafe()
 {
   // No working sensor: we can't tell if the chamber is too cold, so stop cooling
@@ -526,8 +543,10 @@ void setup() {
   attachInterrupt(BUTTON_SET_TEMP_UP, decreaseSetTemp, FALLING);
   attachInterrupt(BUTTON_SET_TEMP_DOWN, increaseSetTemp, FALLING);
 
-  // Without a sensor we keep running (cooling off, "!" on the OLED) so the fault shows up over MQTT
   setupSensors();
+  bool anySensor = false;
+  for(int i = 0; i < NUM_SENSORS; i++) anySensor |= sensors[i].found;
+  if(!anySensor) haltNoSensor();
 
 
 

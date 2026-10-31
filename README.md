@@ -78,7 +78,7 @@ Each incubator names itself `inc-<last 6 hex digits of its MAC>`, for example `i
 
 Cooling only: there is no heating element. Every 5 seconds the firmware compares the temperature with the set point.
 
-The temperature comes from the **control sensor**: the AHT if one is fitted and reading, otherwise the SHTC3. With both fitted, the SHTC3 is reported for monitoring and takes over control if the AHT fails. If no sensor reads, the cooler turns off (it can't tell whether the chamber is too cold), the OLED shows `!`, and the incubator stays online over MQTT.
+The temperature comes from the **control sensor**: the AHT if one is fitted and reading, otherwise the SHTC3. With both fitted, the SHTC3 is reported for monitoring and takes over control if the AHT fails. If no sensor is found at boot, the firmware halts with the cooler off and blinks the Feather's red LED (pin 13) at 1 Hz. If the sensors were found but stop reading later, the cooler turns off (it can't tell whether the chamber is too cold), the OLED shows `!`, and the incubator stays online over MQTT.
 
 | Condition | Cooler | Inside fans |
 |---|---|---|
