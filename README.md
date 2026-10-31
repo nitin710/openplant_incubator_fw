@@ -57,8 +57,8 @@ Each incubator names itself `inc-<last 6 hex digits of its MAC>`, for example `i
 | Topic | Direction | Retained | Payload |
 |---|---|---|---|
 | `openplant/incubator/<id>/status` | ESP → Pi | Yes | `online`, or `offline` (set by the broker as last will) |
-| `openplant/incubator/<id>/meta` | ESP → Pi | Yes | `{"id","fw","mac","ip"}` |
-| `openplant/incubator/<id>/state` | ESP → Pi | No | `{"temp","humidity","fan1_rpm","fan2_rpm","light","setpoint","cooling","rssi","uptime"}`, every 30 s and immediately when set point, light or cooling changes |
+| `openplant/incubator/<id>/meta` | ESP → Pi | Yes | `{"id","fw","mac","ip","sensors"}`, where `sensors` lists the fitted sensors, e.g. `["AHT","SHTC3"]` |
+| `openplant/incubator/<id>/state` | ESP → Pi | No | `{"temp","humidity","sensor","temp2","humidity2","sensor2","fan1_rpm","fan2_rpm","light","setpoint","cooling","rssi","uptime"}`, every 30 s and immediately when set point, light, cooling or the control sensor changes. `temp`/`humidity` come from the sensor named in `sensor`, which cooling runs on (`null` and `"none"` if no sensor reads). `temp2`/`humidity2`/`sensor2` are the other sensor, present only when two are fitted (`null` if it fails to read) |
 | `openplant/incubator/<id>/cmd/setpoint` | Pi → ESP | No | Whole degrees, 18–26 |
 | `openplant/incubator/<id>/cmd/light` | Pi → ESP | No | `32`, `64`, `96` or `128` |
 
@@ -67,7 +67,7 @@ Each incubator names itself `inc-<last 6 hex digits of its MAC>`, for example `i
 | Part | ESP32 pin(s) | Purpose |
 |---|---|---|
 | Adafruit Feather ESP32 (`featheresp32`) | — | Main controller |
-| AHT10/AHT20 temperature/humidity sensor | I2C (SDA 23, SCL 22) | Climate sensing (SHTC3 support: #3) |
+| AHT10/AHT20 (0x38) and/or SHTC3 (0x70) temperature/humidity sensor | I2C (SDA 23, SCL 22) | Climate sensing; either or both may be fitted, detected at boot |
 | SH1107 128×64 OLED FeatherWing (0x3C) | I2C | Status display |
 | Grow light | 5 | PWM brightness |
 | Inside circulation fans ×2 | 18, 19 (PWM), 21, 4/A5 (tach) | 25 kHz PWM, RPM feedback |
@@ -76,7 +76,9 @@ Each incubator names itself `inc-<last 6 hex digits of its MAC>`, for example `i
 
 ## How local control works
 
-Cooling only: there is no heating element. Every 5 seconds the firmware compares the temperature with the set point:
+Cooling only: there is no heating element. Every 5 seconds the firmware compares the temperature with the set point.
+
+The temperature comes from the **control sensor**: the AHT if one is fitted and reading, otherwise the SHTC3. With both fitted, the SHTC3 is reported for monitoring and takes over control if the AHT fails. If no sensor reads, the cooler turns off (it can't tell whether the chamber is too cold), the OLED shows `!`, and the incubator stays online over MQTT.
 
 | Condition | Cooler | Inside fans |
 |---|---|---|
@@ -86,13 +88,13 @@ Cooling only: there is no heating element. Every 5 seconds the firmware compares
 
 - The set point defaults to 22 °C at power-up and can be set between 18 and 26 °C. The buttons change it by 1 °C and wrap around at the ends of the range.
 - The light button steps through 32 → 64 → 96 → 128 (default 64).
-- The OLED shows temperature, humidity, light level, fan RPMs, a status marker (`+` cooling, `-` below range, `o` in range) and the device ID with WiFi/MQTT connection state.
+- The OLED shows temperature and humidity with the control sensor's name, the monitoring sensor's reading (`Mon:`), light level, fan RPMs, a status marker (`+` cooling, `-` below range, `o` in range, `!` no sensor) and the device ID with WiFi/MQTT connection state.
 
 ## Getting started
 
 ### Flash an incubator
 
-The firmware builds with the Arduino IDE using ESP32 Arduino core **2.x** (core 3.x removed the `ledcSetup` API it uses) and the Adafruit GFX, SH110X and AHTX0 libraries, plus PubSubClient.
+The firmware builds with the Arduino IDE using ESP32 Arduino core **2.x** (core 3.x removed the `ledcSetup` API it uses) and the Adafruit GFX, SH110X, AHTX0 and SHTC3 libraries, plus PubSubClient.
 
 1. Copy `incubtaorPwmControl/secrets.h.example` to `secrets.h` and fill in the WiFi and MQTT broker details. `secrets.h` is git-ignored.
 2. Open `incubtaorPwmControl/incubtaorPwmControl.ino`, select the Adafruit ESP32 Feather board and upload.

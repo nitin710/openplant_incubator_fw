@@ -3,13 +3,15 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <Adafruit_AHTX0.h>
+#include <Adafruit_SHTC3.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "secrets.h" // WiFi + MQTT broker settings. Copy secrets.h.example to secrets.h
 
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.2.0"
 
 Adafruit_AHTX0 aht;
+Adafruit_SHTC3 shtc3;
 Adafruit_SH1107 display = Adafruit_SH1107(64, 128, &Wire);
 
 WiFiClient wifiClient;
@@ -74,6 +76,31 @@ char topicState[64];        // openplant/incubator/<id>/state
 char topicCmdSetpoint[64];  // openplant/incubator/<id>/cmd/setpoint
 char topicCmdLight[64];     // openplant/incubator/<id>/cmd/light
 
+
+// Temperature/humidity sensors on the I2C bus. Each type has a fixed address, so a
+// board can carry one of each. The order is the priority: the first sensor that reads
+// controls cooling, the other one is reported for monitoring.
+enum SensorType{
+  SENSOR_AHT,
+  SENSOR_SHTC3
+};
+struct TempSensor{
+  SensorType type;
+  const char *name;
+  uint8_t addr;
+  bool found;     // answered at boot
+  bool ok;        // last read succeeded
+  float temp;
+  float humidity;
+};
+TempSensor sensors[] = {
+  {SENSOR_AHT, "AHT", 0x38},
+  {SENSOR_SHTC3, "SHTC3", 0x70},
+};
+const int NUM_SENSORS = sizeof(sensors) / sizeof(sensors[0]);
+int controlSensor = -1;  // index of the sensor cooling runs on, -1 if none reads
+int monitorSensor = -1;  // index of the other fitted sensor, -1 if only one is fitted
+int publishedControlSensor = -2;
 
 enum CoolingStatus{
   OFF,
@@ -242,6 +269,78 @@ String adjustCooling(float temp)
   return response;
 }
 
+void setupSensors()
+{
+  for(int i = 0; i < NUM_SENSORS; i++)
+  {
+    TempSensor &s = sensors[i];
+    s.found = s.type == SENSOR_AHT ? aht.begin() : shtc3.begin();
+    Serial.print(s.name); Serial.println(s.found ? " found" : " not found");
+  }
+}
+
+bool i2cPresent(uint8_t addr)
+{
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+void readSensors()
+{
+  controlSensor = -1;
+  monitorSensor = -1;
+  for(int i = 0; i < NUM_SENSORS; i++)
+  {
+    TempSensor &s = sensors[i];
+    s.ok = false;
+    if(!s.found) continue;
+    // Both libraries retry forever if the sensor drops off the bus mid-read, so check it answers first
+    if(i2cPresent(s.addr))
+    {
+      sensors_event_t humidity, temp;
+      bool read = s.type == SENSOR_AHT ? aht.getEvent(&humidity, &temp) : shtc3.getEvent(&humidity, &temp);
+      if(read && !isnan(temp.temperature))
+      {
+        s.ok = true;
+        s.temp = temp.temperature;
+        s.humidity = humidity.relative_humidity;
+      }
+    }
+    if(!s.ok) { Serial.print(s.name); Serial.println(" read failed"); }
+
+    if(s.ok && controlSensor < 0) controlSensor = i;
+  }
+  // Report whichever fitted sensor isn't controlling, including a failed one so the fault shows up.
+  // With none reading, the first fitted sensor keeps the control slot.
+  int controlSlot = controlSensor;
+  for(int i = 0; i < NUM_SENSORS && controlSlot < 0; i++)
+  {
+    if(sensors[i].found) controlSlot = i;
+  }
+  for(int i = 0; i < NUM_SENSORS; i++)
+  {
+    if(sensors[i].found && i != controlSlot && monitorSensor < 0) monitorSensor = i;
+  }
+}
+
+void coolingFailSafe()
+{
+  // No working sensor: we can't tell if the chamber is too cold, so stop cooling
+  if(coolingStatus == CoolingStatus::ON)
+  {
+    Serial.println("No temperature sensor, cooling off");
+  }
+  coolingStatus = CoolingStatus::OFF;
+  digitalWrite(PIN_COOL_1, LOW);
+  digitalWrite(PIN_COOL_2, LOW);
+}
+
+// JSON number, or null when the reading isn't valid
+String jsonNum(float val, bool ok)
+{
+  return ok ? String(val, 2) : String("null");
+}
+
 void setupDeviceId()
 {
   uint8_t mac[6];
@@ -331,7 +430,17 @@ void maintainMqtt()
     meta += "\"id\":\"" + String(deviceId) + "\",";
     meta += "\"fw\":\"" FW_VERSION "\",";
     meta += "\"mac\":\"" + WiFi.macAddress() + "\",";
-    meta += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
+    meta += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+    meta += "\"sensors\":[";
+    bool first = true;
+    for(int i = 0; i < NUM_SENSORS; i++)
+    {
+      if(!sensors[i].found) continue;
+      if(!first) meta += ",";
+      meta += "\"" + String(sensors[i].name) + "\"";
+      first = false;
+    }
+    meta += "]";
     meta += "}";
     mqttClient.publish(topicMeta, meta.c_str(), true);
     mqttClient.subscribe(topicCmdSetpoint);
@@ -344,19 +453,29 @@ void maintainMqtt()
   }
 }
 
-void publishState(float temp, float humidity, long rpm_1, long rpm_2)
+void publishState(long rpm_1, long rpm_2)
 {
   if(!mqttClient.connected()) return;
 
-  if(tempSetPoint != publishedSetPoint || lightLevel != publishedLightLevel || (int)coolingStatus != publishedCoolingStatus)
+  if(tempSetPoint != publishedSetPoint || lightLevel != publishedLightLevel || (int)coolingStatus != publishedCoolingStatus || controlSensor != publishedControlSensor)
   {
     publishNow = true;
   }
   if(!publishNow && millis() - lastMqttPublish < MQTT_PUBLISH_INTERVAL) return;
 
   String payload = "{";
-  payload += "\"temp\":" + String(temp, 2) + ",";
-  payload += "\"humidity\":" + String(humidity, 2) + ",";
+  // temp/humidity come from the sensor cooling runs on; temp2/humidity2 from the other one, if fitted
+  TempSensor *ctrl = controlSensor >= 0 ? &sensors[controlSensor] : nullptr;
+  payload += "\"temp\":" + jsonNum(ctrl ? ctrl->temp : 0, ctrl) + ",";
+  payload += "\"humidity\":" + jsonNum(ctrl ? ctrl->humidity : 0, ctrl) + ",";
+  payload += "\"sensor\":\"" + String(ctrl ? ctrl->name : "none") + "\",";
+  if(monitorSensor >= 0)
+  {
+    TempSensor &mon = sensors[monitorSensor];
+    payload += "\"temp2\":" + jsonNum(mon.temp, mon.ok) + ",";
+    payload += "\"humidity2\":" + jsonNum(mon.humidity, mon.ok) + ",";
+    payload += "\"sensor2\":\"" + String(mon.name) + "\",";
+  }
   payload += "\"fan1_rpm\":" + String(rpm_1) + ",";
   payload += "\"fan2_rpm\":" + String(rpm_2) + ",";
   payload += "\"light\":" + String(lightLevel) + ",";
@@ -373,6 +492,7 @@ void publishState(float temp, float humidity, long rpm_1, long rpm_2)
     publishedSetPoint = tempSetPoint;
     publishedLightLevel = lightLevel;
     publishedCoolingStatus = (int)coolingStatus;
+    publishedControlSensor = controlSensor;
   }
 }
 
@@ -406,11 +526,8 @@ void setup() {
   attachInterrupt(BUTTON_SET_TEMP_UP, decreaseSetTemp, FALLING);
   attachInterrupt(BUTTON_SET_TEMP_DOWN, increaseSetTemp, FALLING);
 
-  if (! aht.begin()) {
-  Serial.println("Could not find AHT10? Check wiring");
-  while (1) delay(10);
-  }
-  Serial.println("AHT10 found");
+  // Without a sensor we keep running (cooling off, "!" on the OLED) so the fault shows up over MQTT
+  setupSensors();
 
 
 
@@ -470,29 +587,57 @@ void loop() {
 
 
   // TEMP
-  sensors_event_t humidity, temp;
-  aht.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
+  readSensors();
+  TempSensor *ctrl = controlSensor >= 0 ? &sensors[controlSensor] : nullptr;
 
   // Adjust cooling for temperature
-  if((millis() - timeSinceCoolingUpdate) > COOLING_UPDATE_INTERVAL)
+  if(!ctrl)
+  {
+    coolingFailSafe();
+    response = "!";
+  }
+  else if((millis() - timeSinceCoolingUpdate) > COOLING_UPDATE_INTERVAL)
   {
     // every COOLING_UPDATE_INTERVAL
     timeSinceCoolingUpdate = millis();
-    response = adjustCooling(temp.temperature);
+    response = adjustCooling(ctrl->temp);
   }
 
   // update display
-  Serial.print("Temperature: "); Serial.print(temp.temperature); Serial.println(" *C");
-  Serial.print("Humidity: "); Serial.print(humidity.relative_humidity); Serial.println("% rH");
   display.clearDisplay();
   display.setCursor(0,0);
-  display.print("Temp: "); display.print(temp.temperature); display.print(" *C\n");
-  display.print("Humidity: "); display.print(humidity.relative_humidity); display.print("% rH\n\n");
+  if(ctrl)
+  {
+    Serial.print("Temperature: "); Serial.print(ctrl->temp); Serial.print(" *C ("); Serial.print(ctrl->name); Serial.println(")");
+    Serial.print("Humidity: "); Serial.print(ctrl->humidity); Serial.println("% rH");
+    display.print("Temp: "); display.print(ctrl->temp); display.print(" *C "); display.print(ctrl->name); display.print("\n");
+    display.print("Humidity: "); display.print(ctrl->humidity); display.print("% rH\n");
+  }
+  else
+  {
+    display.print("Temp: ! no sensor\n");
+    display.print("Humidity: -\n");
+  }
+  if(monitorSensor >= 0)
+  {
+    TempSensor &mon = sensors[monitorSensor];
+    display.print("Mon: ");
+    if(mon.ok)
+    {
+      display.print(mon.temp, 1); display.print("C "); display.print(mon.humidity, 0); display.print("% ");
+    }
+    else
+    {
+      display.print("! ");
+    }
+    display.print(mon.name);
+  }
+  display.print("\n");
   display.print("Light level: "); display.print(lightLevel); display.print("\n");
   //display.print("Fan level: "); display.print(fanLevel); display.print("\n");
   display.print("Fan 1 speed: "); display.print(rpm_1); display.print(" rpm"); display.print("\n");
   display.print("Fan 2 speed: "); display.print(rpm_2); display.print(" rpm"); display.print("\n");
-  display.print("INFO: "); display.print(temp.temperature); display.print("/"); display.print(tempSetPoint); display.print(":"); display.println(response);
+  display.print("INFO: "); if(ctrl) display.print(ctrl->temp); else display.print("-"); display.print("/"); display.print(tempSetPoint); display.print(":"); display.println(response);
   display.print(deviceId);
   display.print(" W:"); display.print(WiFi.status() == WL_CONNECTED ? "y" : "n");
   display.print(" M:"); display.print(mqttClient.connected() ? "y" : "n");
@@ -501,7 +646,7 @@ void loop() {
   // Network (cooling above runs regardless of WiFi/MQTT)
   maintainWifi();
   maintainMqtt();
-  publishState(temp.temperature, humidity.relative_humidity, rpm_1, rpm_2);
+  publishState(rpm_1, rpm_2);
 
   delay(500);
 }
