@@ -12,7 +12,7 @@ printf 'listener 1883\nallow_anonymous true\n' | sudo tee /etc/mosquitto/conf.d/
 sudo systemctl enable --now mosquitto && sudo systemctl restart mosquitto
 
 # Node-RED + Node.js (official installer), then start on boot
-bash <(curl -sL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb)
+bash <(curl -sfL https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered)
 sudo systemctl enable --now nodered
 
 # Dashboard 2.0
